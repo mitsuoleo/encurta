@@ -34,6 +34,9 @@ func RateLimitCreates(limiter Limiter, log *slog.Logger) func(http.Handler) http
 }
 
 func ClientIP(r *http.Request) string {
+	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+		return cf
+	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
 		return strings.TrimSpace(parts[0])

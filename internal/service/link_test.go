@@ -97,6 +97,13 @@ func TestCreateAlias(t *testing.T) {
 	require.Equal(t, "myname", got.ShortCode)
 }
 
+func TestCreateHyphenAlias(t *testing.T) {
+	svc := New(&stubLinks{}, newMapCache(), "http://localhost:8080")
+	got, err := svc.Create(context.Background(), CreateInput{OwnerID: 1, URL: "https://example.com", Alias: "meu-link"})
+	require.NoError(t, err)
+	require.Equal(t, "meu-link", got.ShortCode)
+}
+
 func TestCreateBadAlias(t *testing.T) {
 	svc := New(&stubLinks{}, newMapCache(), "http://localhost:8080")
 	_, err := svc.Create(context.Background(), CreateInput{OwnerID: 1, URL: "https://example.com", Alias: "ab"})

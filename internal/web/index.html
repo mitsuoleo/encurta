@@ -8,9 +8,10 @@
     :root { color-scheme: dark; --bg:#0f1419; --card:#1a222c; --line:#2c3847; --text:#e8eef4; --muted:#93a4b8; --accent:#3d9cf0; --danger:#f07178; }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--text); }
-    main { max-width: 720px; margin: 0 auto; padding: 2rem 1rem 4rem; }
+    main { max-width: 720px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+    header.top { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1.25rem; }
     h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
-    p.lead { color: var(--muted); margin: 0 0 1.5rem; }
+    p.lead { color: var(--muted); margin: 0; }
     .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
     label { display: block; font-size: .8rem; color: var(--muted); margin: .5rem 0 .2rem; }
     input { width: 100%; padding: .55rem .7rem; border-radius: 8px; border: 1px solid var(--line); background: #0f1419; color: var(--text); }
@@ -27,12 +28,22 @@
     .muted { color: var(--muted); font-size: .8rem; }
     .bar { height: 8px; background: #2a6ea8; border-radius: 4px; margin: .2rem 0 .6rem; }
     [hidden] { display: none !important; }
+    #session { margin-top: 0; }
+    #session button { margin-top: 0; }
   </style>
 </head>
 <body>
 <main>
-  <h1>URL Shortener</h1>
-  <p class="lead">Encurte URLs, copie o link e veja analytics da sua conta.</p>
+  <header class="top">
+    <div>
+      <h1>URL Shortener</h1>
+      <p class="lead">Encurte URLs, copie o link e veja analytics da sua conta.</p>
+    </div>
+    <div id="session" class="row" hidden>
+      <span class="muted" id="who"></span>
+      <button type="button" class="ghost" id="logout">Sair</button>
+    </div>
+  </header>
 
   <section id="auth" class="card">
     <div class="row">
@@ -46,12 +57,8 @@
   </section>
 
   <section id="app" class="card" hidden>
-    <div class="row">
-      <span class="muted" id="who"></span>
-      <button type="button" class="ghost" id="logout">Sair</button>
-    </div>
     <label>URL longa <input id="url" placeholder="https://example.com/caminho"></label>
-    <label>Alias (opcional) <input id="alias" placeholder="mylink"></label>
+    <label>Alias (opcional) <input id="alias" placeholder="meu-link"></label>
     <label>Expira em (RFC3339, opcional) <input id="expires" placeholder="2027-01-01T00:00:00Z"></label>
     <button type="button" id="create">Encurtar</button>
     <div class="ok" id="created"></div>
@@ -75,6 +82,10 @@ function headers() {
 }
 async function api(path, opts={}) {
   const res = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers||{}) } });
+  if (res.status === 401 && path !== "/auth/login" && path !== "/auth/register") {
+    await logout(false);
+    throw new Error("unauthorized");
+  }
   const text = await res.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch {}
@@ -84,12 +95,15 @@ async function api(path, opts={}) {
 function showApp() {
   $("auth").hidden = true;
   $("app").hidden = false;
+  $("session").hidden = false;
   $("who").textContent = localStorage.getItem(emailKey) || "";
   loadLinks();
 }
 function showAuth() {
   $("auth").hidden = false;
   $("app").hidden = true;
+  $("session").hidden = true;
+  $("who").textContent = "";
 }
 
 $("tab-login").onclick = () => { mode = "login"; $("tab-login").className = ""; $("tab-register").className = "ghost"; };
@@ -101,10 +115,28 @@ $("auth-go").onclick = async () => {
     const data = await api(path, { method: "POST", body: JSON.stringify({ email: $("email").value, password: $("password").value }) });
     localStorage.setItem(tokenKey, data.access_token);
     localStorage.setItem(emailKey, data.email);
+    $("password").value = "";
     showApp();
   } catch (e) { $("auth-err").textContent = e.message; }
 };
-$("logout").onclick = () => { localStorage.clear(); showAuth(); };
+
+async function logout(callApi = true) {
+  if (callApi) {
+    try { await fetch("/auth/logout", { method: "POST", headers: headers() }); } catch {}
+  }
+  localStorage.removeItem(tokenKey);
+  localStorage.removeItem(emailKey);
+  $("created").textContent = "";
+  $("create-err").textContent = "";
+  $("stats").innerHTML = "";
+  $("links").innerHTML = "";
+  $("url").value = "";
+  $("alias").value = "";
+  $("expires").value = "";
+  showAuth();
+}
+$("logout").onclick = () => logout(true);
+
 $("create").onclick = async () => {
   $("create-err").textContent = "";
   $("created").textContent = "";
@@ -137,7 +169,7 @@ async function loadLinks() {
     del.textContent = "Desativar";
     del.disabled = !l.is_active;
     del.onclick = async () => {
-      await api("/links/" + l.short_code, { method: "DELETE" });
+      await api("/links/" + encodeURIComponent(l.short_code), { method: "DELETE" });
       loadLinks();
     };
     row.append(an, del);
@@ -147,7 +179,7 @@ async function loadLinks() {
 }
 
 async function showStats(code) {
-  const s = await api("/links/" + code + "/analytics");
+  const s = await api("/links/" + encodeURIComponent(code) + "/analytics");
   const max = Math.max(1, ...(s.clicks_by_day || []).map(d => d.count));
   const days = (s.clicks_by_day || []).map(d =>
     `<div class="muted">${d.day} · ${d.count}</div><div class="bar" style="width:${Math.round(100*d.count/max)}%"></div>`

@@ -1,0 +1,11 @@
+#cloud-config
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - apt-transport-https
+runcmd:
+  - curl -fsSL https://get.docker.com | sh
+  - usermod -aG docker azureuser
+  - mkdir -p /opt/urlshortener
+  - chown azureuser:azureuser /opt/urlshortener

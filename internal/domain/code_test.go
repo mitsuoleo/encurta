@@ -32,6 +32,11 @@ func TestValidShortCode(t *testing.T) {
 	require.False(t, ValidShortCode("bad/code"))
 	require.False(t, ValidShortCode(string(make([]byte, 21))))
 	require.True(t, ValidAlias("myalias"))
+	require.True(t, ValidAlias("my-link"))
+	require.True(t, ValidShortCode("my-link"))
+	require.False(t, ValidAlias("-link"))
+	require.False(t, ValidAlias("link-"))
+	require.False(t, ValidAlias("my--link"))
 	require.False(t, ValidAlias("ab"))
 	require.False(t, ValidAlias("auth"))
 }

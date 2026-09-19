@@ -28,8 +28,20 @@ func ValidShortCode(code string) bool {
 	if len(code) == 0 || len(code) > 20 {
 		return false
 	}
+	if code[0] == '-' || code[len(code)-1] == '-' {
+		return false
+	}
+	prevHyphen := false
 	for i := 0; i < len(code); i++ {
 		c := code[i]
+		if c == '-' {
+			if prevHyphen {
+				return false
+			}
+			prevHyphen = true
+			continue
+		}
+		prevHyphen = false
 		ok := (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 		if !ok {
 			return false

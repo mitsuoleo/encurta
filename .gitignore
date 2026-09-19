@@ -5,3 +5,5 @@ coverage.out
 .idea/
 .vscode/
 .env
+.env.prod
+deploy/last-vm.json

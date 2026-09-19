@@ -225,6 +225,30 @@ func TestCreateAliasAndConflict(t *testing.T) {
 	require.Equal(t, http.StatusConflict, rec.Code)
 }
 
+func TestCreateHyphenAliasRedirect(t *testing.T) {
+	api, _ := testAPI(t, newMemStore(), fixedLimiter{allow: true})
+	tok := register(t, api, "a@example.com")
+	req := httptest.NewRequest(http.MethodPost, "/links", bytes.NewBufferString(`{"url":"https://example.com","alias":"my-link"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	req = httptest.NewRequest(http.MethodGet, "/my-link", nil)
+	rec = httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusFound, rec.Code)
+	require.Equal(t, "https://example.com", rec.Header().Get("Location"))
+}
+
+func TestLogout(t *testing.T) {
+	api, _ := testAPI(t, newMemStore(), fixedLimiter{allow: true})
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
 func TestCreateLinkInvalidURL(t *testing.T) {
 	api, _ := testAPI(t, newMemStore(), fixedLimiter{allow: true})
 	tok := register(t, api, "a@example.com")

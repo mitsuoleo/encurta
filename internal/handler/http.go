@@ -54,6 +54,7 @@ func (a *API) Router() http.Handler {
 	r.Handle("/metrics", promhttp.Handler())
 	r.Post("/auth/register", a.register)
 	r.Post("/auth/login", a.login)
+	r.Post("/auth/logout", a.logout)
 
 	r.Route("/links", func(r chi.Router) {
 		r.Use(mw.RequireAuth(a.auth))
@@ -109,6 +110,11 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, authResponse{Token: tok, ExpiresIn: exp, Email: user.Email})
+}
+
+func (a *API) logout(w http.ResponseWriter, r *http.Request) {
+	_ = r
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type createRequest struct {
