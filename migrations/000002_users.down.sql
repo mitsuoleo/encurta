@@ -1,0 +1,2 @@
+ALTER TABLE links DROP CONSTRAINT IF EXISTS fk_links_owner;
+DROP TABLE IF EXISTS users;
