@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/esposo/url-shortener/internal/domain"
+	"github.com/mitsuoleo/encurta/internal/domain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,4 +25,9 @@ func TestIssueAndParse(t *testing.T) {
 func TestWeakPassword(t *testing.T) {
 	_, err := HashPassword("short")
 	require.ErrorIs(t, err, domain.ErrWeakPassword)
+}
+
+func TestPasswordTooLong(t *testing.T) {
+	_, err := HashPassword(string(make([]byte, 73)))
+	require.ErrorIs(t, err, domain.ErrPasswordTooLong)
 }

@@ -4,21 +4,22 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/esposo/url-shortener/internal/auth"
-	"github.com/esposo/url-shortener/internal/config"
-	"github.com/esposo/url-shortener/internal/handler"
-	mw "github.com/esposo/url-shortener/internal/middleware"
-	"github.com/esposo/url-shortener/internal/migrate"
-	"github.com/esposo/url-shortener/internal/repository/postgres"
-	rediscache "github.com/esposo/url-shortener/internal/repository/redis"
-	"github.com/esposo/url-shortener/internal/service"
-	"github.com/esposo/url-shortener/internal/worker"
+	"github.com/mitsuoleo/encurta/internal/auth"
+	"github.com/mitsuoleo/encurta/internal/config"
+	"github.com/mitsuoleo/encurta/internal/handler"
+	mw "github.com/mitsuoleo/encurta/internal/middleware"
+	"github.com/mitsuoleo/encurta/internal/migrate"
+	"github.com/mitsuoleo/encurta/internal/repository/postgres"
+	rediscache "github.com/mitsuoleo/encurta/internal/repository/redis"
+	"github.com/mitsuoleo/encurta/internal/service"
+	"github.com/mitsuoleo/encurta/internal/worker"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -73,9 +74,15 @@ func main() {
 	tokens := auth.NewTokens(cfg.JWTSecret, 24*time.Hour)
 	authSvc := service.NewAuth(store, tokens)
 
-	go worker.ConsumeStream(ctx, cache, store, fmt.Sprintf("api-%d", os.Getpid()), log)
+	go worker.ConsumeStream(ctx, cache, store, cfg.ClickConsumer, log)
 
-	limiter := redisLimiter{cache: cache, limit: cfg.RateLimitCreatePerHour}
+	limiter := redisLimiter{
+		cache:         cache,
+		createLimit:   cfg.RateLimitCreatePerHour,
+		authLimit:     cfg.RateLimitAuthPerMinute,
+		redirectLimit: cfg.RateLimitRedirectPerMin,
+		trusted:       cfg.TrustedProxies,
+	}
 	api := handler.New(
 		svc,
 		authSvc,
@@ -85,12 +92,17 @@ func main() {
 		func() error { return store.Ping(context.Background()) },
 		func() error { return cache.Ping(context.Background()) },
 		limiter,
+		cfg.MetricsToken,
+		cfg.TrustedProxies,
 	)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           api.Router(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -108,14 +120,31 @@ func main() {
 }
 
 type redisLimiter struct {
-	cache *rediscache.Cache
-	limit int
+	cache         *rediscache.Cache
+	createLimit   int
+	authLimit     int
+	redirectLimit int
+	trusted       []*net.IPNet
+}
+
+func (l redisLimiter) allow(r *http.Request, prefix string, limit int, ttl time.Duration) (bool, error) {
+	key := prefix + "ip:" + mw.ClientIP(r, l.trusted)
+	if uid, ok := mw.UserID(r.Context()); ok {
+		key = fmt.Sprintf("%su:%d", prefix, uid)
+	}
+	return l.cache.Allow(r.Context(), key, limit, ttl)
 }
 
 func (l redisLimiter) AllowCreate(r *http.Request) (bool, error) {
-	key := "ip:" + mw.ClientIP(r)
-	if uid, ok := mw.UserID(r.Context()); ok {
-		key = fmt.Sprintf("u:%d", uid)
-	}
-	return l.cache.AllowCreate(r.Context(), key, l.limit)
+	return l.allow(r, "rl:create:", l.createLimit, time.Hour)
+}
+
+func (l redisLimiter) AllowAuth(r *http.Request) (bool, error) {
+	key := "rl:auth:ip:" + mw.ClientIP(r, l.trusted)
+	return l.cache.Allow(r.Context(), key, l.authLimit, time.Minute)
+}
+
+func (l redisLimiter) AllowRedirect(r *http.Request) (bool, error) {
+	key := "rl:redir:ip:" + mw.ClientIP(r, l.trusted)
+	return l.cache.Allow(r.Context(), key, l.redirectLimit, time.Minute)
 }

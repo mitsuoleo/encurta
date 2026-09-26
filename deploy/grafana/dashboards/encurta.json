@@ -1,0 +1,74 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "rate(encurta_redirect_duration_seconds_count[1m])",
+          "legendFormat": "redirects/s",
+          "refId": "A"
+        }
+      ],
+      "title": "Redirect rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "rate(encurta_cache_hits_total[1m])",
+          "legendFormat": "hits",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(encurta_cache_misses_total[1m])",
+          "legendFormat": "misses",
+          "refId": "B"
+        }
+      ],
+      "title": "Cache hits vs misses",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "rate(encurta_clicks_dropped_total[5m])",
+          "legendFormat": "dropped",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(encurta_link_create_errors_total[5m])",
+          "legendFormat": "create errors",
+          "refId": "B"
+        }
+      ],
+      "title": "Drops and create errors",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 38,
+  "tags": ["encurta"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "Encurta",
+  "uid": "encurta",
+  "version": 1
+}

@@ -1,18 +1,22 @@
-# URL Shortener
+# Encurta
 
-Serviço em **Go** que transforma URLs longas em links curtos, redireciona em poucos milissegundos e registra analytics de cliques **sem** colocar o banco no caminho crítico.
+Serviço em **Go** que transforma URLs longas em links curtos. O registro de cliques acontece fora da resposta de redirect; a resolução consulta PostgreSQL quando o link não está no cache Redis.
 
 Projeto de portfólio: API REST, JWT, cache Redis, PostgreSQL, métricas Prometheus, Docker Compose e uma UI simples.
 
-![Tela de login da UI](docs/ui.png)
+**Documentação:** [apresentação geral](docs/README.md) · [índice por público](docs/INDEX.md) · [guia de uso](docs/user-guide/using.md) · [desenvolvimento local](docs/development/local.md) · [operação local](docs/operations/local.md).
 
-**No seu PC:** [http://localhost:8080](http://localhost:8080)
+![Tela de login atual do Encurta](docs/ui-login-encurta.png)
+
+![Painel atual do Encurta com dados fictícios](docs/ui-dashboard.png)
+
+*Capturas da interface atual com dados ilustrativos; o painel usa respostas simuladas.*
 
 ## Por que existe
 
 Encurtador de URL é um produto batido. O que importa aqui é o **caminho de um clique**:
 
-- O redirect lê no **Redis** (cache-aside); o PostgreSQL é a fonte da verdade.
+- O redirect usa **Redis** quando há cache; em cache miss, consulta o PostgreSQL, que é a fonte da verdade.
 - Cada clique vai com **`XADD` para um Redis Stream**. O handler HTTP devolve `302` na hora. Um worker persiste o evento.
 - Códigos curtos são **base62** aleatório (7 caracteres), com constraint unique e retry em colisão.
 - IP entra só como **SHA-256(salt + IP)**, nunca em texto puro.
@@ -24,16 +28,25 @@ Numa máquina local com Docker Desktop (cache quente, 50 clientes concorrentes, 
 - Cadastro / login / **sair** (JWT) e criação de links pela UI ou pela API
 - Alias customizado (`meu-link`) e data de expiração (opcionais)
 - `GET /{codigo}` público → `302`, ou `410` se o link expirou ou foi desativado
-- Analytics só do dono: total, por dia, top referrers, dispositivo/navegador
-- Rate limit: 100 criações por hora por usuário
-- `/health` e `/metrics` (Prometheus)
+- Analytics só do dono: total, visitantes únicos, por dia, top referrers, dispositivo/navegador
+- Editar destino, reativar, QR e `curl` de redirect na UI
+- Rate limit: criações, auth e redirects públicos
+- `/health`, `/metrics` (Prometheus) e `/openapi.yaml`
+
+## Interface
+
+A UI em `/` reúne criação, lista paginada, edição, ativação e analytics no mesmo painel. O tema claro ou escuro pode ser alternado no topo; na primeira visita, a escolha segue o sistema. Os arquivos da interface são embutidos no binário Go e servidos em `/ui/`, sem dependência de CDN.
+
+Na lista, abra **Detalhes** para editar destino ou validade, desativar ou reativar um link e consultar seus acessos. Se a validade passou, ajuste-a antes de reativar. Falhas de rede mantêm os dados já exibidos e oferecem nova tentativa.
+
+Grafana opcional: `docker compose --profile obs up --build -d` e abra [http://localhost:3000](http://localhost:3000) (admin / admin).
 
 ## Quick start (Windows)
 
 Precisa do **Docker Desktop**. GNU Make **não** é necessário.
 
 ```powershell
-cd URLshortner
+# Na raiz do repositório encurta
 .\make.ps1 up
 ```
 
@@ -68,22 +81,25 @@ Decisões: [docs/adr](docs/adr).
 ## API HTTP
 
 Rotas autenticadas exigem `Authorization: Bearer <access_token>`.
+A [especificação OpenAPI](internal/web/openapi.yaml) é a referência de contrato; a [página da API](docs/reference/api.md) traz exemplos e regras de uso.
 
 | Método | Caminho | Auth | O que faz |
 |--------|---------|------|-----------|
 | GET | `/` | não | UI |
+| GET | `/openapi.yaml` | não | OpenAPI 3 |
 | GET | `/health` | não | App + Postgres + Redis |
-| GET | `/metrics` | não | Prometheus |
+| GET | `/metrics` | token se `METRICS_TOKEN` | Prometheus |
 | POST | `/auth/register` | não | `{ "email", "password" }` (senha ≥ 8) |
 | POST | `/auth/login` | não | mesmo body → `{ access_token, expires_in, email }` |
 | POST | `/auth/logout` | não | `204`; a UI apaga o token local |
 | POST | `/links` | sim | `{ "url", "alias"?, "expires_at"? }` → `{ short_code, short_url }` |
-| GET | `/links` | sim | Seus links |
-| GET | `/links/{codigo}/analytics` | sim | Breakdown de cliques (403 se não for seu) |
+| GET | `/links` | sim | Página `{ links, total, limit, offset }` |
+| PATCH | `/links/{codigo}` | sim | `{ "url"?, "expires_at"?, "is_active"? }` |
+| GET | `/links/{codigo}/analytics` | sim | Breakdown de cliques (404 se não existir ou não for seu) |
 | DELETE | `/links/{codigo}` | sim | Soft delete; redirects seguintes dão 410 |
 | GET | `/{codigo}` | não | Redirect |
 
-`alias`: letras, números e hífen, 3–20 caracteres, sem começar/terminar com `-` nem hífen duplo. `expires_at` é RFC3339. Duplicado → `409`.
+`alias`: letras, números e hífen, 3–20 caracteres, sem começar/terminar com `-` nem hífen duplo. `expires_at` é RFC3339; em `PATCH /links/{codigo}`, a string vazia (`""`) remove a validade. Duplicado → `409`. `GET /links` aceita `limit` (máx. 100) e `offset`.
 
 ### curl (PowerShell)
 
@@ -103,21 +119,7 @@ curl.exe -sS -D - -o NUL http://localhost:8080/meu-link
 
 ## Configuração
 
-Tudo por variável de ambiente (o Compose já traz defaults que funcionam).
-
-| Variável | Padrão | Função |
-|----------|--------|--------|
-| `HTTP_ADDR` | `:8080` | Endereço de listen |
-| `DATABASE_URL` | URL local do Postgres | Persistência |
-| `REDIS_URL` | `redis://localhost:6379/0` | Cache, rate limit, stream de cliques |
-| `PUBLIC_BASE_URL` | `http://localhost:8080` | Host usado em `short_url` |
-| `JWT_SECRET` | `dev-jwt-change-me` | **Troque em produção** |
-| `IP_HASH_SALT` | `dev-only-change-me` | **Troque em produção** |
-| `RATE_LIMIT_CREATE_PER_HOUR` | `100` | Teto de criação por usuário (fallback IP) |
-| `CACHE_TTL` | `24h` | TTL do cache de redirect |
-| `MIGRATIONS_PATH` | `file://migrations` | `file:///migrations` na imagem |
-
-Postgres e Redis **não** são publicados no host; só a API escuta na `8080`.
+Tudo é configurado por variável de ambiente. O Compose fornece valores locais; PostgreSQL e Redis não publicam portas no host. Consulte a [referência canônica de configuração](docs/reference/configuration.md) para padrões, sensibilidade e validações, e a [visão de segurança](docs/security/overview.md) para limites dessas proteções.
 
 ## Testes e CI
 
@@ -125,9 +127,12 @@ Postgres e Redis **não** são publicados no host; só a API escuta na `8080`.
 .\make.ps1 test    # go test via Docker
 .\make.ps1 lint
 .\make.ps1 smoke   # Compose precisa estar no ar
+node --test --experimental-test-coverage internal/web/logic.test.cjs  # regras da UI
+npm ci
+npm run test:ui  # fluxos da UI em Chrome, com API simulada
 ```
 
-No GitHub Actions: `go test ./...` e `golangci-lint` a cada push/PR.
+Os testes de navegador usam um servidor local de arquivos e respostas simuladas para cenários de sucesso e erro; não substituem o `smoke` com a API real. É necessário ter Chrome instalado. O teste PostgreSQL só executa com `TEST_DATABASE_URL` apontando para um banco isolado cujo nome termina em `_test` e `TEST_DATABASE_ISOLATED=1`; ele aplica migrações e grava dados de teste. No GitHub Actions, esse banco é provisionado antes de `go test ./...` e `golangci-lint` a cada push/PR.
 
 ## Teste de carga (redirect)
 
@@ -151,11 +156,7 @@ Go 1.23 · chi · pgx · Redis · golang-migrate · cliente Prometheus · JWT (H
 
 ## Fora deste repositório
 
-Grafana (faça scrape de `/metrics` se quiser um dashboard). Sem checagem de reputação de domínio. JWTs não são revogados no servidor antes do expiry (`Sair` só apaga o token no browser). Se o `XADD` no Redis falhar, o clique pode se perder; o redirect ainda acontece.
-
-## Produção (opcional): Azure + Cloudflare
-
-Não é necessário para usar local. Script: [`deploy/azure-vm.ps1`](deploy/azure-vm.ps1) — VM Ubuntu `B1s` em `brazilsouth`, Compose na porta 80 (~US$ 20–25/mês). Quando tiver domínio, DNS A no Cloudflare para o IP da VM.
+Sem checagem de reputação de domínio (host privado literal e IPv4 “estranho” tipo `127.1` são recusados; nomes tipo `nip.io` que resolvem para rede interna não são resolvidos no create). JWTs não são revogados no servidor antes do expiry (`Sair` só apaga o token no browser). Se o `XADD` no Redis falhar, o clique pode se perder; o redirect ainda acontece. Grafana local: `docker compose --profile obs up -d`.
 
 ## Licença
 

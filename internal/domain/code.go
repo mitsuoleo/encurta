@@ -62,7 +62,7 @@ func ValidAlias(alias string) bool {
 
 func ReservedCode(code string) bool {
 	switch code {
-	case "health", "metrics", "links", "auth", "assets", "static", "favicon", "index":
+	case "health", "metrics", "links", "auth", "assets", "static", "favicon", "index", "openapi", "docs":
 		return true
 	default:
 		return false

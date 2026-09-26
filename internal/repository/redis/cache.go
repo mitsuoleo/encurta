@@ -8,9 +8,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/esposo/url-shortener/internal/domain"
+	"github.com/mitsuoleo/encurta/internal/domain"
 	"github.com/redis/go-redis/v9"
 )
+
+const clickStreamMaxLen = 100_000
+
+var incrExpire = redis.NewScript(`
+local n = redis.call("INCR", KEYS[1])
+if n == 1 then
+  redis.call("EXPIRE", KEYS[1], ARGV[1])
+end
+return n
+`)
 
 type Cache struct {
 	client *redis.Client
@@ -52,18 +62,16 @@ func (c *Cache) DeleteLink(ctx context.Context, code string) error {
 	return c.client.Del(ctx, key(code)).Err()
 }
 
-func (c *Cache) AllowCreate(ctx context.Context, id string, limit int) (bool, error) {
-	k := fmt.Sprintf("rl:create:%s", id)
-	n, err := c.client.Incr(ctx, k).Result()
+func (c *Cache) Allow(ctx context.Context, id string, limit int, ttl time.Duration) (bool, error) {
+	n, err := incrExpire.Run(ctx, c.client, []string{id}, int(ttl.Seconds())).Int64()
 	if err != nil {
 		return false, err
 	}
-	if n == 1 {
-		if err := c.client.Expire(ctx, k, time.Hour).Err(); err != nil {
-			return false, err
-		}
-	}
 	return n <= int64(limit), nil
+}
+
+func (c *Cache) AllowCreate(ctx context.Context, id string, limit int) (bool, error) {
+	return c.Allow(ctx, fmt.Sprintf("rl:create:%s", id), limit, time.Hour)
 }
 
 const ClickStream = "clicks"
@@ -72,12 +80,16 @@ const ClickGroup = "click-workers"
 func (c *Cache) PublishClick(ctx context.Context, ev domain.ClickEvent) error {
 	return c.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: ClickStream,
+		MaxLen: clickStreamMaxLen,
+		Approx: true,
 		Values: map[string]any{
 			"link_id":    ev.LinkID,
 			"clicked_at": ev.ClickedAt.UTC().Format(time.RFC3339Nano),
 			"ip_hash":    ev.IPHash,
 			"user_agent": ev.UserAgent,
 			"referer":    ev.Referer,
+			"device":     ev.Device,
+			"browser":    ev.Browser,
 		},
 	}).Err()
 }
@@ -109,6 +121,24 @@ func (c *Cache) ReadClicks(ctx context.Context, consumer string, count int64, bl
 		out = append(out, s.Messages...)
 	}
 	return out, nil
+}
+
+func (c *Cache) AutoClaimClicks(ctx context.Context, consumer string, minIdle time.Duration, count int64) ([]redis.XMessage, error) {
+	msgs, _, err := c.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+		Stream:   ClickStream,
+		Group:    ClickGroup,
+		Consumer: consumer,
+		MinIdle:  minIdle,
+		Start:    "0-0",
+		Count:    count,
+	}).Result()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return msgs, nil
 }
 
 func (c *Cache) AckClick(ctx context.Context, id string) error {

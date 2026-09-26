@@ -26,6 +26,27 @@ func TestNormalizeAndValidateURL(t *testing.T) {
 	_, err = NormalizeAndValidateURL("https://")
 	require.ErrorIs(t, err, ErrInvalidURL)
 
-	_, err = NormalizeAndValidateURL("data:text/html,hello")
+	_, err = NormalizeAndValidateURL("https://127.0.0.1/")
+	require.ErrorIs(t, err, ErrInvalidURL)
+
+	_, err = NormalizeAndValidateURL("http://192.168.0.10/admin")
+	require.ErrorIs(t, err, ErrInvalidURL)
+
+	_, err = NormalizeAndValidateURL("http://localhost/secret")
+	require.ErrorIs(t, err, ErrInvalidURL)
+
+	_, err = NormalizeAndValidateURL("http://169.254.169.254/latest/meta-data/")
+	require.ErrorIs(t, err, ErrInvalidURL)
+
+	_, err = NormalizeAndValidateURL("http://2130706433/")
+	require.ErrorIs(t, err, ErrInvalidURL)
+
+	_, err = NormalizeAndValidateURL("http://127.1/")
+	require.ErrorIs(t, err, ErrInvalidURL)
+
+	_, err = NormalizeAndValidateURL("http://0x7f000001/")
+	require.ErrorIs(t, err, ErrInvalidURL)
+
+	_, err = NormalizeAndValidateURL("http://0177.0.0.1/")
 	require.ErrorIs(t, err, ErrInvalidURL)
 }

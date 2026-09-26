@@ -6,17 +6,24 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/esposo/url-shortener/internal/domain"
-	"github.com/esposo/url-shortener/internal/observability"
+	"github.com/mitsuoleo/encurta/internal/domain"
+	"github.com/mitsuoleo/encurta/internal/observability"
 )
 
 const maxCodeAttempts = 5
 
+const (
+	DefaultListLimit = 50
+	MaxListLimit     = 100
+)
+
 type Links interface {
 	InsertLink(ctx context.Context, in domain.Link) (domain.Link, error)
 	GetByCode(ctx context.Context, code string) (domain.Link, error)
-	ListByOwner(ctx context.Context, ownerID int64) ([]domain.Link, error)
-	Deactivate(ctx context.Context, code string, ownerID int64) (domain.Link, error)
+	GetByCodeForCache(ctx context.Context, code string, populate func(domain.Link) error) (domain.Link, error)
+	ListByOwner(ctx context.Context, ownerID int64, limit, offset int) ([]domain.Link, int, error)
+	Deactivate(ctx context.Context, code string, ownerID int64, invalidate func() error) (domain.Link, error)
+	UpdateLink(ctx context.Context, code string, ownerID int64, url *string, expiresAt *time.Time, clearExpiry bool, isActive *bool, invalidate func() error) (domain.Link, error)
 	Analytics(ctx context.Context, linkID int64) (domain.Analytics, error)
 }
 
@@ -49,6 +56,20 @@ type CreateInput struct {
 	ExpiresAt *time.Time
 }
 
+type UpdateInput struct {
+	URL         *string
+	ExpiresAt   *time.Time
+	ClearExpiry bool
+	IsActive    *bool
+}
+
+type LinkPage struct {
+	Links  []domain.Link
+	Total  int
+	Limit  int
+	Offset int
+}
+
 func (s *LinkService) Create(ctx context.Context, in CreateInput) (domain.Link, error) {
 	normalized, err := domain.NormalizeAndValidateURL(in.URL)
 	if err != nil {
@@ -73,7 +94,6 @@ func (s *LinkService) Create(ctx context.Context, in CreateInput) (domain.Link, 
 		if err != nil {
 			return domain.Link{}, err
 		}
-		_ = s.cache.SetLink(ctx, link.ShortCode, link)
 		return link, nil
 	}
 	var last error
@@ -88,7 +108,6 @@ func (s *LinkService) Create(ctx context.Context, in CreateInput) (domain.Link, 
 		base.ShortCode = code
 		link, err := s.links.InsertLink(ctx, base)
 		if err == nil {
-			_ = s.cache.SetLink(ctx, link.ShortCode, link)
 			return link, nil
 		}
 		if errors.Is(err, domain.ErrCodeCollision) {
@@ -114,11 +133,14 @@ func (s *LinkService) Resolve(ctx context.Context, code string) (domain.Link, er
 		return link, nil
 	}
 	observability.CacheMisses.Inc()
-	link, err := s.links.GetByCode(ctx, code)
+	link, err := s.links.GetByCodeForCache(ctx, code, func(link domain.Link) error {
+		// A failed cache write leaves PostgreSQL authoritative.
+		_ = s.cache.SetLink(ctx, code, link)
+		return nil
+	})
 	if err != nil {
 		return domain.Link{}, err
 	}
-	_ = s.cache.SetLink(ctx, code, link)
 	if err := link.Redirectable(s.now()); err != nil {
 		return domain.Link{}, err
 	}
@@ -133,18 +155,64 @@ func (s *LinkService) Analytics(ctx context.Context, ownerID int64, code string)
 	return s.links.Analytics(ctx, link.ID)
 }
 
-func (s *LinkService) List(ctx context.Context, ownerID int64) ([]domain.Link, error) {
-	return s.links.ListByOwner(ctx, ownerID)
+func (s *LinkService) List(ctx context.Context, ownerID int64, limit, offset int) (LinkPage, error) {
+	if limit <= 0 {
+		limit = DefaultListLimit
+	}
+	if limit > MaxListLimit {
+		limit = MaxListLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	links, total, err := s.links.ListByOwner(ctx, ownerID, limit, offset)
+	if err != nil {
+		return LinkPage{}, err
+	}
+	return LinkPage{Links: links, Total: total, Limit: limit, Offset: offset}, nil
+}
+
+func (s *LinkService) Update(ctx context.Context, ownerID int64, code string, in UpdateInput) (domain.Link, error) {
+	if _, err := s.requireOwner(ctx, ownerID, code); err != nil {
+		return domain.Link{}, err
+	}
+	var url *string
+	if in.URL != nil {
+		normalized, err := domain.NormalizeAndValidateURL(*in.URL)
+		if err != nil {
+			return domain.Link{}, err
+		}
+		url = &normalized
+	}
+	if in.ExpiresAt != nil && !in.ClearExpiry && !in.ExpiresAt.After(s.now()) {
+		return domain.Link{}, domain.ErrInvalidExpiry
+	}
+	link, err := s.links.UpdateLink(ctx, code, ownerID, url, in.ExpiresAt, in.ClearExpiry, in.IsActive, func() error {
+		return s.invalidateCache(ctx, code)
+	})
+	if err != nil {
+		return domain.Link{}, err
+	}
+	return link, nil
 }
 
 func (s *LinkService) Deactivate(ctx context.Context, ownerID int64, code string) error {
 	if _, err := s.requireOwner(ctx, ownerID, code); err != nil {
 		return err
 	}
-	if _, err := s.links.Deactivate(ctx, code, ownerID); err != nil {
+	_, err := s.links.Deactivate(ctx, code, ownerID, func() error {
+		return s.invalidateCache(ctx, code)
+	})
+	if err != nil {
 		return err
 	}
-	_ = s.cache.DeleteLink(ctx, code)
+	return nil
+}
+
+func (s *LinkService) invalidateCache(ctx context.Context, code string) error {
+	if err := s.cache.DeleteLink(ctx, code); err != nil {
+		return fmt.Errorf("%w: %v", domain.ErrCacheUnavailable, err)
+	}
 	return nil
 }
 
@@ -157,7 +225,7 @@ func (s *LinkService) requireOwner(ctx context.Context, ownerID int64, code stri
 		return domain.Link{}, err
 	}
 	if !link.OwnedBy(ownerID) {
-		return domain.Link{}, domain.ErrForbidden
+		return domain.Link{}, domain.ErrNotFound
 	}
 	return link, nil
 }

@@ -20,6 +20,8 @@ var (
 	ErrInvalidAlias       = errors.New("invalid alias")
 	ErrInvalidExpiry      = errors.New("invalid expiration")
 	ErrWeakPassword       = errors.New("password must be at least 8 characters")
+	ErrPasswordTooLong    = errors.New("password is too long")
+	ErrCacheUnavailable   = errors.New("cache unavailable")
 )
 
 type User struct {
@@ -59,6 +61,8 @@ type ClickEvent struct {
 	IPHash    string
 	UserAgent string
 	Referer   string
+	Device    string
+	Browser   string
 }
 
 type DayCount struct {
@@ -73,6 +77,7 @@ type NamedCount struct {
 
 type Analytics struct {
 	TotalClicks      int64        `json:"total_clicks"`
+	UniqueVisitors   int64        `json:"unique_visitors"`
 	ClicksByDay      []DayCount   `json:"clicks_by_day"`
 	TopReferrers     []NamedCount `json:"top_referrers"`
 	DeviceBreakdown  []NamedCount `json:"device_breakdown"`

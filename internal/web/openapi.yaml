@@ -1,0 +1,409 @@
+openapi: 3.0.3
+info:
+  title: Encurta
+  version: "1.0.0"
+  description: Encurta URLs, redireciona via cache Redis e registra cliques de forma assíncrona.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Saúde da API, Postgres e Redis
+      responses:
+        "200":
+          description: Tudo ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          description: Dependência fora
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /metrics:
+    get:
+      summary: Métricas Prometheus; token exigido somente se METRICS_TOKEN estiver definido
+      description: No Compose local, METRICS_TOKEN fica vazio e a rota é pública.
+      security:
+        - {}
+        - metricsAuth: []
+      responses:
+        "200":
+          description: Text exposition format
+        "401":
+          description: Bearer ausente ou inválido quando METRICS_TOKEN está definido
+  /auth/register:
+    post:
+      summary: Cria conta
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthRequest"
+      responses:
+        "201":
+          description: Token emitido
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Payload inválido
+        "429":
+          description: Limite de requisições excedido
+        "503":
+          description: Serviço de rate limit indisponível
+  /auth/login:
+    post:
+      summary: Entra
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthRequest"
+      responses:
+        "200":
+          description: Token emitido
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Payload inválido
+        "401":
+          description: Credenciais inválidas
+        "429":
+          description: Limite de requisições excedido
+        "503":
+          description: Serviço de rate limit indisponível
+  /auth/logout:
+    post:
+      summary: Logout no cliente (token segue válido até expirar)
+      responses:
+        "204":
+          description: Sem conteúdo
+  /links:
+    get:
+      summary: Lista links do usuário (paginado)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Página de links
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LinkPage"
+        "401":
+          description: Token ausente ou inválido
+        "500":
+          description: Falha ao listar links
+    post:
+      summary: Cria link curto
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLink"
+      responses:
+        "201":
+          description: Criado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateLinkResponse"
+        "400":
+          description: Payload, URL, alias ou validade inválidos
+        "401":
+          description: Token ausente ou inválido
+        "409":
+          description: Alias em uso
+        "429":
+          description: Limite de requisições excedido
+        "503":
+          description: Serviço de rate limit indisponível
+        "500":
+          description: Falha inesperada ao criar link
+  /links/{code}:
+    patch:
+      summary: Atualiza destino, expiração ou reativa
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/code"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateLink"
+      responses:
+        "200":
+          description: Atualizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LinkView"
+        "400":
+          description: Payload, URL ou validade inválidos
+        "401":
+          description: Token ausente ou inválido
+        "404":
+          description: Não encontrado
+        "503":
+          description: Cache indisponível durante a alteração
+        "500":
+          description: Falha inesperada
+    delete:
+      summary: Desativa (redirects passam a 410)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/code"
+      responses:
+        "204":
+          description: Desativado
+        "401":
+          description: Token ausente ou inválido
+        "404":
+          description: Não encontrado
+        "503":
+          description: Cache indisponível durante a desativação
+        "500":
+          description: Falha inesperada
+  /links/{code}/analytics:
+    get:
+      summary: Analytics do dono
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/code"
+      responses:
+        "200":
+          description: Totais, por dia, referrers, dispositivo, navegador, únicos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Analytics"
+        "401":
+          description: Token ausente ou inválido
+        "404":
+          description: Não encontrado
+        "500":
+          description: Falha ao consultar analytics
+  /{code}:
+    get:
+      summary: Redirect 302
+      parameters:
+        - $ref: "#/components/parameters/code"
+      responses:
+        "302":
+          description: Found
+        "404":
+          description: Não encontrado
+        "410":
+          description: Inativo ou expirado
+        "429":
+          description: Rate limit
+        "500":
+          description: Falha inesperada ao resolver o link
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "JWT de usuário (Authorization: Bearer)"
+    metricsAuth:
+      type: http
+      scheme: bearer
+      description: Token estático exigido apenas quando METRICS_TOKEN é configurado; não é o JWT de usuário
+  parameters:
+    code:
+      in: path
+      name: code
+      required: true
+      schema:
+        type: string
+  schemas:
+    AuthRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+          minLength: 8
+    CreateLink:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Destino HTTP(S) aceito pela validação do serviço.
+        alias:
+          type: string
+          minLength: 3
+          maxLength: 20
+          pattern: '^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$'
+          description: Nomes reservados também são recusados.
+        expires_at:
+          description: Data futura em RFC3339; string vazia equivale a ausência de validade.
+          anyOf:
+            - type: string
+              format: date-time
+            - type: string
+              enum: [""]
+    UpdateLink:
+      type: object
+      properties:
+        url:
+          type: string
+        expires_at:
+          description: Data RFC3339 para definir a validade; string vazia para removê-la.
+          anyOf:
+            - type: string
+              format: date-time
+            - type: string
+              enum: [""]
+        is_active:
+          type: boolean
+    AuthResponse:
+      type: object
+      required: [access_token, expires_in, email]
+      properties:
+        access_token:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+          description: Tempo de validade do token em segundos.
+        email:
+          type: string
+    CreateLinkResponse:
+      type: object
+      required: [short_code, short_url]
+      properties:
+        short_code:
+          type: string
+        short_url:
+          type: string
+          format: uri
+    LinkView:
+      type: object
+      required: [short_code, short_url, original_url, is_active, created_at]
+      properties:
+        short_code:
+          type: string
+        short_url:
+          type: string
+          format: uri
+        original_url:
+          type: string
+          format: uri
+        is_active:
+          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+          description: Omitido quando o link não tem validade.
+        created_at:
+          type: string
+          format: date-time
+    LinkPage:
+      type: object
+      required: [links, total, limit, offset]
+      properties:
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/LinkView"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+    NamedCount:
+      type: object
+      required: [name, count]
+      properties:
+        name:
+          type: string
+        count:
+          type: integer
+          format: int64
+    DayCount:
+      type: object
+      required: [day, count]
+      properties:
+        day:
+          type: string
+          description: Dia UTC em YYYY-MM-DD.
+        count:
+          type: integer
+          format: int64
+    Analytics:
+      type: object
+      required: [total_clicks, unique_visitors, clicks_by_day, top_referrers, device_breakdown, browser_breakdown]
+      properties:
+        total_clicks:
+          type: integer
+          format: int64
+        unique_visitors:
+          type: integer
+          format: int64
+          description: Quantidade distinta de hashes de IP, não de pessoas identificadas.
+        clicks_by_day:
+          type: array
+          items:
+            $ref: "#/components/schemas/DayCount"
+        top_referrers:
+          type: array
+          items:
+            $ref: "#/components/schemas/NamedCount"
+        device_breakdown:
+          type: array
+          items:
+            $ref: "#/components/schemas/NamedCount"
+        browser_breakdown:
+          type: array
+          items:
+            $ref: "#/components/schemas/NamedCount"
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: object
+          required: [app, db, cache]
+          properties:
+            app:
+              type: string
+              enum: [ok]
+            db:
+              type: string
+              enum: [ok, down]
+            cache:
+              type: string
+              enum: [ok, down]

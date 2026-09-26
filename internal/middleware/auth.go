@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/esposo/url-shortener/internal/domain"
+	"github.com/mitsuoleo/encurta/internal/domain"
 )
 
 type ctxKey int

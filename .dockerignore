@@ -2,3 +2,15 @@
 bin
 *.md
 .golangci.yml
+node_modules
+test-results
+playwright-report
+.playwright-cli
+.go-build-testcache
+.review-go-cache
+.env*
+**/.env*
+*.env
+**/*.env
+*.env.*
+**/*.env.*

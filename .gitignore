@@ -4,6 +4,8 @@ bin/
 coverage.out
 .idea/
 .vscode/
+node_modules/
+test-results/
+playwright-report/
 .env
 .env.prod
-deploy/last-vm.json

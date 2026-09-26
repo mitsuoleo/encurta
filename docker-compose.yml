@@ -34,11 +34,35 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-change-me}
       MIGRATIONS_PATH: file:///migrations
       RATE_LIMIT_CREATE_PER_HOUR: "100"
+      RATE_LIMIT_AUTH_PER_MINUTE: "20"
+      RATE_LIMIT_REDIRECT_PER_MINUTE: "300"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ["obs"]
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: ["obs"]
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
 
 volumes:
   pgdata:

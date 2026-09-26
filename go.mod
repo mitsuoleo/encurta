@@ -1,4 +1,4 @@
-module github.com/esposo/url-shortener
+module github.com/mitsuoleo/encurta
 
 go 1.23.0
 

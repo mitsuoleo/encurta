@@ -1,0 +1,3 @@
+ALTER TABLE clicks
+    DROP COLUMN IF EXISTS device,
+    DROP COLUMN IF EXISTS browser;

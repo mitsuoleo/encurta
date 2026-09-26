@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/esposo/url-shortener/internal/domain"
+	"github.com/mitsuoleo/encurta/internal/domain"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -60,37 +60,112 @@ func (s *Store) GetByCode(ctx context.Context, code string) (domain.Link, error)
 	return link, nil
 }
 
-func (s *Store) ListByOwner(ctx context.Context, ownerID int64) ([]domain.Link, error) {
+// GetByCodeForCache holds a shared row lock until the cache population finishes.
+// Writers take the same row's exclusive lock before invalidating the cache.
+func (s *Store) GetByCodeForCache(ctx context.Context, code string, populate func(domain.Link) error) (domain.Link, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Link{}, fmt.Errorf("begin cache read: %w", err)
+	}
+	defer rollback(tx)
+	const q = `SELECT id, short_code, original_url, owner_id, is_active, expires_at, created_at
+		FROM links WHERE short_code = $1 FOR SHARE`
+	var link domain.Link
+	err = tx.QueryRow(ctx, q, code).Scan(
+		&link.ID, &link.ShortCode, &link.OriginalURL, &link.OwnerID, &link.IsActive, &link.ExpiresAt, &link.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Link{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.Link{}, fmt.Errorf("get link for cache: %w", err)
+	}
+	if err := populate(link); err != nil {
+		return domain.Link{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Link{}, fmt.Errorf("commit cache read: %w", err)
+	}
+	return link, nil
+}
+
+func (s *Store) ListByOwner(ctx context.Context, ownerID int64, limit, offset int) ([]domain.Link, int, error) {
+	var total int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM links WHERE owner_id = $1`, ownerID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count links: %w", err)
+	}
 	const q = `
 		SELECT id, short_code, original_url, owner_id, is_active, expires_at, created_at
 		FROM links WHERE owner_id = $1
-		ORDER BY created_at DESC`
-	rows, err := s.pool.Query(ctx, q, ownerID)
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3`
+	rows, err := s.pool.Query(ctx, q, ownerID, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("list links: %w", err)
+		return nil, 0, fmt.Errorf("list links: %w", err)
 	}
 	defer rows.Close()
 	var out []domain.Link
 	for rows.Next() {
 		var link domain.Link
 		if err := rows.Scan(&link.ID, &link.ShortCode, &link.OriginalURL, &link.OwnerID, &link.IsActive, &link.ExpiresAt, &link.CreatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, link)
 	}
 	if out == nil {
 		out = []domain.Link{}
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }
 
-func (s *Store) Deactivate(ctx context.Context, code string, ownerID int64) (domain.Link, error) {
+func (s *Store) UpdateLink(ctx context.Context, code string, ownerID int64, url *string, expiresAt *time.Time, clearExpiry bool, isActive *bool, invalidate func() error) (domain.Link, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Link{}, fmt.Errorf("begin update link: %w", err)
+	}
+	defer rollback(tx)
+	const q = `
+		UPDATE links SET
+			original_url = COALESCE($3, original_url),
+			expires_at = CASE
+				WHEN $4 THEN NULL
+				WHEN $5::timestamptz IS NOT NULL THEN $5
+				ELSE expires_at
+			END,
+			is_active = COALESCE($6, is_active)
+		WHERE short_code = $1 AND owner_id = $2
+		RETURNING id, short_code, original_url, owner_id, is_active, expires_at, created_at`
+	var link domain.Link
+	err = tx.QueryRow(ctx, q, code, ownerID, url, clearExpiry, expiresAt, isActive).Scan(
+		&link.ID, &link.ShortCode, &link.OriginalURL, &link.OwnerID, &link.IsActive, &link.ExpiresAt, &link.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Link{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.Link{}, fmt.Errorf("update link: %w", err)
+	}
+	if err := invalidate(); err != nil {
+		return domain.Link{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Link{}, fmt.Errorf("commit update link: %w", err)
+	}
+	return link, nil
+}
+
+func (s *Store) Deactivate(ctx context.Context, code string, ownerID int64, invalidate func() error) (domain.Link, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Link{}, fmt.Errorf("begin deactivate link: %w", err)
+	}
+	defer rollback(tx)
 	const q = `
 		UPDATE links SET is_active = FALSE
 		WHERE short_code = $1 AND owner_id = $2
 		RETURNING id, short_code, original_url, owner_id, is_active, expires_at, created_at`
 	var link domain.Link
-	err := s.pool.QueryRow(ctx, q, code, ownerID).Scan(
+	err = tx.QueryRow(ctx, q, code, ownerID).Scan(
 		&link.ID, &link.ShortCode, &link.OriginalURL, &link.OwnerID, &link.IsActive, &link.ExpiresAt, &link.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -99,14 +174,24 @@ func (s *Store) Deactivate(ctx context.Context, code string, ownerID int64) (dom
 	if err != nil {
 		return domain.Link{}, fmt.Errorf("deactivate link: %w", err)
 	}
+	if err := invalidate(); err != nil {
+		return domain.Link{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Link{}, fmt.Errorf("commit deactivate link: %w", err)
+	}
 	return link, nil
 }
 
 func (s *Store) InsertClick(ctx context.Context, ev domain.ClickEvent) error {
+	device, browser := ev.Device, ev.Browser
+	if device == "" || browser == "" {
+		device, browser = domain.ClassifyUserAgent(ev.UserAgent)
+	}
 	const q = `
-		INSERT INTO clicks (link_id, clicked_at, ip_hash, user_agent, referer)
-		VALUES ($1, $2, $3, $4, $5)`
-	_, err := s.pool.Exec(ctx, q, ev.LinkID, ev.ClickedAt, ev.IPHash, ev.UserAgent, ev.Referer)
+		INSERT INTO clicks (link_id, clicked_at, ip_hash, user_agent, referer, device, browser)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	_, err := s.pool.Exec(ctx, q, ev.LinkID, ev.ClickedAt, ev.IPHash, ev.UserAgent, ev.Referer, device, browser)
 	if err != nil {
 		return fmt.Errorf("insert click: %w", err)
 	}
@@ -115,7 +200,7 @@ func (s *Store) InsertClick(ctx context.Context, ev domain.ClickEvent) error {
 
 func (s *Store) Analytics(ctx context.Context, linkID int64) (domain.Analytics, error) {
 	var out domain.Analytics
-	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM clicks WHERE link_id = $1`, linkID).Scan(&out.TotalClicks)
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*), COUNT(DISTINCT ip_hash) FROM clicks WHERE link_id = $1`, linkID).Scan(&out.TotalClicks, &out.UniqueVisitors)
 	if err != nil {
 		return domain.Analytics{}, fmt.Errorf("count clicks: %w", err)
 	}
@@ -144,37 +229,41 @@ func (s *Store) Analytics(ctx context.Context, linkID int64) (domain.Analytics, 
 		return domain.Analytics{}, err
 	}
 
-	rows, err = s.pool.Query(ctx, `SELECT user_agent FROM clicks WHERE link_id = $1`, linkID)
+	rows, err = s.pool.Query(ctx, `
+		SELECT COALESCE(NULLIF(device, ''), 'unknown') AS name, COUNT(*) AS c
+		FROM clicks WHERE link_id = $1
+		GROUP BY name ORDER BY c DESC`, linkID)
 	if err != nil {
-		return domain.Analytics{}, fmt.Errorf("user agents: %w", err)
+		return domain.Analytics{}, fmt.Errorf("devices: %w", err)
 	}
-	defer rows.Close()
-
-	devices := map[string]int64{}
-	browsers := map[string]int64{}
-	for rows.Next() {
-		var ua *string
-		if err := rows.Scan(&ua); err != nil {
-			return domain.Analytics{}, err
-		}
-		val := ""
-		if ua != nil {
-			val = *ua
-		}
-		d, b := domain.ClassifyUserAgent(val)
-		devices[d]++
-		browsers[b]++
-	}
-	if err := rows.Err(); err != nil {
+	out.DeviceBreakdown, err = scanNamed(rows)
+	if err != nil {
 		return domain.Analytics{}, err
 	}
-	out.DeviceBreakdown = mapToNamed(devices)
-	out.BrowserBreakdown = mapToNamed(browsers)
+
+	rows, err = s.pool.Query(ctx, `
+		SELECT COALESCE(NULLIF(browser, ''), 'unknown') AS name, COUNT(*) AS c
+		FROM clicks WHERE link_id = $1
+		GROUP BY name ORDER BY c DESC`, linkID)
+	if err != nil {
+		return domain.Analytics{}, fmt.Errorf("browsers: %w", err)
+	}
+	out.BrowserBreakdown, err = scanNamed(rows)
+	if err != nil {
+		return domain.Analytics{}, err
+	}
+
 	if out.ClicksByDay == nil {
 		out.ClicksByDay = []domain.DayCount{}
 	}
 	if out.TopReferrers == nil {
 		out.TopReferrers = []domain.NamedCount{}
+	}
+	if out.DeviceBreakdown == nil {
+		out.DeviceBreakdown = []domain.NamedCount{}
+	}
+	if out.BrowserBreakdown == nil {
+		out.BrowserBreakdown = []domain.NamedCount{}
 	}
 	return out, nil
 }
@@ -205,14 +294,6 @@ func scanNamed(rows pgx.Rows) ([]domain.NamedCount, error) {
 	return out, rows.Err()
 }
 
-func mapToNamed(m map[string]int64) []domain.NamedCount {
-	out := make([]domain.NamedCount, 0, len(m))
-	for k, v := range m {
-		out = append(out, domain.NamedCount{Name: k, Count: v})
-	}
-	return out
-}
-
 func WaitReady(ctx context.Context, pool *pgxpool.Pool) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -228,4 +309,10 @@ func WaitReady(ctx context.Context, pool *pgxpool.Pool) error {
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
+}
+
+func rollback(tx pgx.Tx) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = tx.Rollback(ctx) // Commit closes the transaction on the success path.
 }

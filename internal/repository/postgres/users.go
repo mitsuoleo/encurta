@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/esposo/url-shortener/internal/domain"
+	"github.com/mitsuoleo/encurta/internal/domain"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )

@@ -2,9 +2,10 @@ package service
 
 import (
 	"context"
+	"errors"
 
-	"github.com/esposo/url-shortener/internal/auth"
-	"github.com/esposo/url-shortener/internal/domain"
+	"github.com/mitsuoleo/encurta/internal/auth"
+	"github.com/mitsuoleo/encurta/internal/domain"
 )
 
 type Users interface {
@@ -45,6 +46,10 @@ func (a *AuthService) Login(ctx context.Context, email, password string) (domain
 	email = auth.NormalizeEmail(email)
 	user, err := a.users.GetUserByEmail(ctx, email)
 	if err != nil {
+		if errors.Is(err, domain.ErrInvalidCredentials) {
+			_ = auth.CheckPassword(auth.DummyHash, password)
+			return domain.User{}, "", 0, domain.ErrInvalidCredentials
+		}
 		return domain.User{}, "", 0, err
 	}
 	if err := auth.CheckPassword(user.PasswordHash, password); err != nil {

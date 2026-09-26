@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/esposo/url-shortener/internal/domain"
+	"github.com/mitsuoleo/encurta/internal/domain"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -24,6 +24,9 @@ func HashPassword(plain string) (string, error) {
 	if len(plain) < 8 {
 		return "", domain.ErrWeakPassword
 	}
+	if len(plain) > 72 {
+		return "", domain.ErrPasswordTooLong
+	}
 	b, err := bcrypt.GenerateFromPassword([]byte(plain), 12)
 	if err != nil {
 		return "", err
@@ -36,6 +39,17 @@ func CheckPassword(hash, plain string) error {
 		return domain.ErrInvalidCredentials
 	}
 	return nil
+}
+
+// DummyHash is a bcrypt hash used so unknown-email logins still run CompareHashAndPassword.
+var DummyHash = mustDummyHash()
+
+func mustDummyHash() string {
+	b, err := bcrypt.GenerateFromPassword([]byte("dummy-password-not-used"), 12)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 func NormalizeEmail(email string) string {

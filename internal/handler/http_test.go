@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/esposo/url-shortener/internal/auth"
-	"github.com/esposo/url-shortener/internal/domain"
-	"github.com/esposo/url-shortener/internal/service"
-	"github.com/esposo/url-shortener/internal/worker"
+	"github.com/mitsuoleo/encurta/internal/auth"
+	"github.com/mitsuoleo/encurta/internal/domain"
+	"github.com/mitsuoleo/encurta/internal/service"
+	"github.com/mitsuoleo/encurta/internal/worker"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,19 +53,68 @@ func (m *memStore) GetByCode(_ context.Context, code string) (domain.Link, error
 	return link, nil
 }
 
-func (m *memStore) ListByOwner(_ context.Context, ownerID int64) ([]domain.Link, error) {
+func (m *memStore) GetByCodeForCache(ctx context.Context, code string, populate func(domain.Link) error) (domain.Link, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []domain.Link
-	for _, l := range m.links {
-		if l.OwnedBy(ownerID) {
-			out = append(out, l)
-		}
+	link, ok := m.links[code]
+	if !ok {
+		return domain.Link{}, domain.ErrNotFound
 	}
-	return out, nil
+	if err := populate(link); err != nil {
+		return domain.Link{}, err
+	}
+	return link, nil
 }
 
-func (m *memStore) Deactivate(_ context.Context, code string, ownerID int64) (domain.Link, error) {
+func (m *memStore) ListByOwner(_ context.Context, ownerID int64, limit, offset int) ([]domain.Link, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var all []domain.Link
+	for _, l := range m.links {
+		if l.OwnedBy(ownerID) {
+			all = append(all, l)
+		}
+	}
+	total := len(all)
+	if offset > total {
+		return []domain.Link{}, total, nil
+	}
+	end := offset + limit
+	if end > total || limit <= 0 {
+		end = total
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return all[offset:end], total, nil
+}
+
+func (m *memStore) UpdateLink(_ context.Context, code string, ownerID int64, url *string, expiresAt *time.Time, clearExpiry bool, isActive *bool, invalidate func() error) (domain.Link, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	link, ok := m.links[code]
+	if !ok || !link.OwnedBy(ownerID) {
+		return domain.Link{}, domain.ErrNotFound
+	}
+	if url != nil {
+		link.OriginalURL = *url
+	}
+	if clearExpiry {
+		link.ExpiresAt = nil
+	} else if expiresAt != nil {
+		link.ExpiresAt = expiresAt
+	}
+	if isActive != nil {
+		link.IsActive = *isActive
+	}
+	if err := invalidate(); err != nil {
+		return domain.Link{}, err
+	}
+	m.links[code] = link
+	return link, nil
+}
+
+func (m *memStore) Deactivate(_ context.Context, code string, ownerID int64, invalidate func() error) (domain.Link, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	link, ok := m.links[code]
@@ -73,6 +122,9 @@ func (m *memStore) Deactivate(_ context.Context, code string, ownerID int64) (do
 		return domain.Link{}, domain.ErrNotFound
 	}
 	link.IsActive = false
+	if err := invalidate(); err != nil {
+		return domain.Link{}, err
+	}
 	m.links[code] = link
 	return link, nil
 }
@@ -153,6 +205,14 @@ func (f fixedLimiter) AllowCreate(*http.Request) (bool, error) {
 	return f.allow, nil
 }
 
+func (f fixedLimiter) AllowAuth(*http.Request) (bool, error) {
+	return true, nil
+}
+
+func (f fixedLimiter) AllowRedirect(*http.Request) (bool, error) {
+	return true, nil
+}
+
 type recPub struct {
 	mu sync.Mutex
 	ev []domain.ClickEvent
@@ -171,7 +231,7 @@ func testAPI(t *testing.T, store *memStore, limiter fixedLimiter) (*API, *recPub
 	svc := service.New(store, newMemCache(), "http://localhost:8080")
 	authSvc := service.NewAuth(store, tokens)
 	pub := &recPub{}
-	api := New(svc, authSvc, worker.Publisher(pub.publish), "testsalt", discardLogger(), func() error { return nil }, func() error { return nil }, limiter)
+	api := New(svc, authSvc, worker.Publisher(pub.publish), "testsalt", discardLogger(), func() error { return nil }, func() error { return nil }, limiter, "", nil)
 	return api, pub
 }
 
@@ -279,6 +339,7 @@ func TestRedirectHappyPublishesClick(t *testing.T) {
 	api.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusFound, rec.Code)
 	require.Equal(t, "https://example.com/x", rec.Header().Get("Location"))
+	require.Equal(t, "no-store, private", rec.Header().Get("Cache-Control"))
 	require.Len(t, pub.ev, 1)
 	require.Equal(t, int64(9), pub.ev[0].LinkID)
 }
@@ -292,6 +353,7 @@ func TestRedirectExpiredGone(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusGone, rec.Code)
+	require.Equal(t, "no-store, private", rec.Header().Get("Cache-Control"))
 }
 
 func TestRedirectNotFound(t *testing.T) {
@@ -300,6 +362,7 @@ func TestRedirectNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.Equal(t, "no-store, private", rec.Header().Get("Cache-Control"))
 }
 
 func TestAnalyticsOwnerOnly(t *testing.T) {
@@ -317,7 +380,7 @@ func TestAnalyticsOwnerOnly(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+tokB)
 	rec = httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
-	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, http.StatusNotFound, rec.Code)
 
 	req = httptest.NewRequest(http.MethodGet, "/links/ownlink/analytics", nil)
 	req.Header.Set("Authorization", "Bearer "+tokA)
@@ -361,5 +424,106 @@ func TestUI(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Contains(t, rec.Body.String(), "URL Shortener")
+	require.Contains(t, rec.Header().Get("Content-Type"), "text/html")
+	require.Contains(t, rec.Body.String(), "lang=\"pt-BR\"")
+	require.Contains(t, rec.Body.String(), "href=\"/ui/app.css\"")
+	require.Contains(t, rec.Body.String(), "src=\"/ui/app.js\"")
+	require.Contains(t, rec.Body.String(), "src=\"/ui/logic.js\"")
+	require.Contains(t, rec.Body.String(), "src=\"/ui/qr.js\"")
+	require.NotRegexp(t, `(?is)<style\b`, rec.Body.String())
+	require.NotRegexp(t, `(?is)<script\b[^>]*>\s*[^<\s]`, rec.Body.String())
+	require.NotContains(t, rec.Body.String(), "qrserver.com")
+	csp := rec.Header().Get("Content-Security-Policy")
+	require.Contains(t, csp, "default-src 'self'")
+	require.Contains(t, csp, "style-src 'self'")
+	require.Contains(t, csp, "script-src 'self'")
+	require.Contains(t, csp, "img-src 'self' data:")
+	require.NotContains(t, csp, "'unsafe-inline'")
+}
+
+func TestEmbeddedUIAssets(t *testing.T) {
+	api, _ := testAPI(t, newMemStore(), fixedLimiter{allow: true})
+	for _, tc := range []struct {
+		path        string
+		contentType string
+	}{
+		{path: "/ui/app.css", contentType: "text/css"},
+		{path: "/ui/app.js", contentType: "javascript"},
+		{path: "/ui/logic.js", contentType: "javascript"},
+		{path: "/ui/qr.js", contentType: "javascript"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			rec := httptest.NewRecorder()
+			api.Router().ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.Contains(t, rec.Header().Get("Content-Type"), tc.contentType)
+			require.NotEmpty(t, rec.Body.String())
+			require.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+		})
+	}
+}
+
+func TestPatchLink(t *testing.T) {
+	api, _ := testAPI(t, newMemStore(), fixedLimiter{allow: true})
+	tok := register(t, api, "a@example.com")
+	req := httptest.NewRequest(http.MethodPost, "/links", bytes.NewBufferString(`{"url":"https://example.com","alias":"editme1"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	req = httptest.NewRequest(http.MethodPatch, "/links/editme1", bytes.NewBufferString(`{"url":"https://example.org/novo"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec = httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "https://example.org/novo")
+}
+
+func TestOpenAPI(t *testing.T) {
+	api, _ := testAPI(t, newMemStore(), fixedLimiter{allow: true})
+	req := httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "Encurta")
+}
+
+func TestMetricsProtected(t *testing.T) {
+	store := newMemStore()
+	tokens := auth.NewTokens("test-secret", time.Hour)
+	svc := service.New(store, newMemCache(), "http://localhost:8080")
+	authSvc := service.NewAuth(store, tokens)
+	api := New(svc, authSvc, worker.Publisher(func(context.Context, domain.ClickEvent) error { return nil }), "testsalt", discardLogger(), func() error { return nil }, func() error { return nil }, fixedLimiter{allow: true}, "secret-metrics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer secret-metrics")
+	rec = httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestRegisterDuplicateGeneric(t *testing.T) {
+	api, _ := testAPI(t, newMemStore(), fixedLimiter{allow: true})
+	_ = register(t, api, "dup@example.com")
+	body := bytes.NewBufferString(`{"email":"dup@example.com","password":"password1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", body)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.NotContains(t, rec.Body.String(), "already registered")
+}
+
+func TestLoginUnknownEmail(t *testing.T) {
+	api, _ := testAPI(t, newMemStore(), fixedLimiter{allow: true})
+	body := bytes.NewBufferString(`{"email":"nobody@example.com","password":"password1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", body)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }
