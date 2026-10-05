@@ -1,6 +1,6 @@
 # Usar o painel local
 
-Este guia pressupõe que alguém já iniciou o ambiente conforme [desenvolvimento local](../development/local.md). Abra `http://localhost:8080` no navegador.
+Este guia pressupõe que o ambiente foi iniciado conforme o [README do repositório](../../README.md). Abra `http://localhost:8080` no navegador.
 
 ## Entrar e criar um link
 

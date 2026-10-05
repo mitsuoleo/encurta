@@ -16,4 +16,4 @@ O IP para analytics vira SHA-256 de sal + IP; o valor puro não é armazenado na
 
 Os headers incluem `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, política de referência e CSP sem script inline (`internal/middleware/headers.go`). `/metrics` exige um bearer estático quando `METRICS_TOKEN` está definido; sem ele, é público. O Compose local deixa esse token vazio. `ENV=production` exige segredos próprios, token de métricas e base pública HTTPS, mas não fornece TLS, proxy ou deploy remoto por si só. Consulte [configuração](../reference/configuration.md).
 
-Antes de publicar o serviço, faltam decisões e validações de implantação, gestão de segredos, rede e recuperação registradas em [lacunas](../maintenance/documentation-status.md). Não há promessa de proteção além dos mecanismos descritos acima.
+Antes de publicar o serviço, ainda são necessárias decisões e validações de implantação, gestão de segredos, rede e recuperação. Não há promessa de proteção além dos mecanismos descritos acima.

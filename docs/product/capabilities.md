@@ -1,6 +1,6 @@
 # Capacidades e limites atuais
 
-Este documento descreve o estado do código local, inclusive alterações não commitadas, sobre a revisão `b956c29`. A [apresentação](../README.md) resume o produto; o [guia de uso](../user-guide/using.md) mostra as tarefas no painel.
+Este documento descreve as funcionalidades e restrições da versão presente no repositório. A [apresentação](../README.md) resume o produto; o [guia de uso](../user-guide/using.md) mostra as tarefas no painel.
 
 ## O que está implementado
 
@@ -20,4 +20,4 @@ O registro de analytics é assíncrono: um clique pode aparecer depois do redire
 
 ## Estágio e operação
 
-O alvo suportado neste repositório é o Docker Compose **local**. O perfil opcional de observabilidade inclui Prometheus e Grafana locais. Arquivos anteriores de deploy remoto foram removidos do diretório de trabalho; não há procedimento vigente e verificado para publicar o serviço, fazer backup ou restaurar dados. A [operação local](../operations/local.md) descreve apenas o que a configuração presente permite conferir.
+O ambiente documentado neste repositório é o Docker Compose **local**. O perfil opcional de observabilidade inclui Prometheus e Grafana locais. Não há procedimento documentado para publicar o serviço, fazer backup ou restaurar dados. A [operação local](../operations/local.md) descreve os comandos e verificações disponíveis.

@@ -1,10 +1,35 @@
-# Encurta
+<h1 align="center">Encurta</h1>
+
+<p align="center">
+  Encurtador de URLs com API em Go, painel web e métricas de acesso.
+</p>
+
+<p align="center">
+  <img alt="Go 1.23" src="https://img.shields.io/badge/Go-1.23-00ADD8?style=flat-square&amp;logo=go&amp;logoColor=white">
+  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&amp;logo=postgresql&amp;logoColor=white">
+  <img alt="Redis" src="https://img.shields.io/badge/Redis-DC382D?style=flat-square&amp;logo=redis&amp;logoColor=white">
+  <img alt="Docker Compose" src="https://img.shields.io/badge/Docker_Compose-2496ED?style=flat-square&amp;logo=docker&amp;logoColor=white">
+  <img alt="Prometheus" src="https://img.shields.io/badge/Prometheus-E6522C?style=flat-square&amp;logo=prometheus&amp;logoColor=white">
+</p>
+
+<p align="center">
+  <a href="#por-que-existe">Visão geral</a> ·
+  <a href="#funcionalidades">Funcionalidades</a> ·
+  <a href="#quick-start-windows">Início rápido</a> ·
+  <a href="#arquitetura">Arquitetura</a> ·
+  <a href="#api-http">API</a> ·
+  <a href="#testes-e-ci">Testes</a>
+</p>
+
+---
 
 Serviço em **Go** que transforma URLs longas em links curtos. O registro de cliques acontece fora da resposta de redirect; a resolução consulta PostgreSQL quando o link não está no cache Redis.
 
 Projeto de portfólio: API REST, JWT, cache Redis, PostgreSQL, métricas Prometheus, Docker Compose e uma UI simples.
 
-**Documentação:** [apresentação geral](docs/README.md) · [índice por público](docs/INDEX.md) · [guia de uso](docs/user-guide/using.md) · [desenvolvimento local](docs/development/local.md) · [operação local](docs/operations/local.md).
+**Documentação:** [apresentação e guias](docs/README.md) · [guia de uso](docs/user-guide/using.md) · [API](docs/reference/api.md) · [arquitetura](docs/architecture/overview.md) · [operação local](docs/operations/local.md).
+
+## Prévia da interface
 
 ![Tela de login atual do Encurta](docs/ui-login-encurta.png)
 

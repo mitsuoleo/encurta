@@ -16,7 +16,7 @@ $token = $resposta.access_token
 curl.exe -sS -X POST http://localhost:8080/links -H "Content-Type: application/json" -H "Authorization: Bearer $token" --data-binary "@link.json"
 ```
 
-Os arquivos `auth.json` e `link.json` contêm valores de exemplo; remova-os após o uso e não substitua os exemplos por credenciais reais em arquivos versionados. O cadastro falhará se o e-mail ou alias já estiver em uso. Este exemplo foi conferido contra o código, **não executado** nesta entrega.
+Os arquivos `auth.json` e `link.json` contêm valores de exemplo; remova-os após o uso e não substitua os exemplos por credenciais reais em arquivos versionados. O cadastro falhará se o e-mail ou alias já estiver em uso.
 
 ## Comportamentos relevantes
 

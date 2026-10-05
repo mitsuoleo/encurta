@@ -29,4 +29,4 @@ Após resolver um link, o handler prepara metadados do clique, publica no Redis 
 
 As migrações `000001` a `000003` criam `links`, `clicks` e `users`, associam links a donos e acrescentam dispositivo/navegador aos cliques. `links.short_code` é único; `clicks.link_id` referencia `links.id`. As contagens de analytics vêm de consultas SQL em `internal/repository/postgres/store.go`: visitantes únicos são `COUNT(DISTINCT ip_hash)`, dias usam UTC e os dez principais referenciadores são retornados por frequência. Isso é uma contagem por hash, não uma identificação de pessoas.
 
-As decisões registradas estão em [ADRs](../INDEX.md#desenvolver-e-manter). O diagrama e os fluxos acima descrevem o código inspecionado, não uma observação em produção.
+As decisões técnicas detalham [linguagem](../adr/001-linguagem-go.md), [códigos curtos](../adr/002-codigo-base62.md), [privacidade dos cliques](../adr/003-ip-hash.md), [registro assíncrono](../adr/004-cliques-assincronos.md), [cache](../adr/005-cache-aside.md) e [autenticação](../adr/006-jwt.md). O diagrama e os fluxos acima descrevem a implementação do repositório.
